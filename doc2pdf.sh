@@ -11,9 +11,12 @@
 #    sudo apt -y install pdftk
 # 3) Se o qpdf não estiver instalado, use:
 #    sudo apt -y install qpdf
-# Autor: Gladiston Santana <gladiston.santana@gmail.com>
+#
+# Autor: Gladiston Santana <gladiston[dot]santana[at]gmail[dot]com>
 # Data: 02/10/2024
-
+#
+# Licença: GPL (GNU General Public License)
+#
 # Variáveis padrão de saída, tipos de arquivos e proteção
 vdir_out=""
 vdoc_types="doc,docx,odt"
