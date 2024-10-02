@@ -21,7 +21,7 @@ sudo apt -y install qpdf
 ## Uso 
 Comando básico:  
 ```bash
-./script.sh [diretório_de_entrada] [opções]
+./doc2pdf.sh [diretório_de_entrada] [opções]
 ```
 ## Parâmetros:
 diretório_de_entrada: O diretório onde os arquivos .doc, .docx, ou .odt estão localizados.  
