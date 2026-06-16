@@ -1,162 +1,278 @@
 #!/bin/bash
-
-# Este script converte arquivos MSWord do tipo .doc, .docx ou .odt que estiverem
-# na pasta fornecida como primeiro argumento e os converte para PDF, colocando-os
-# na pasta informada pela variável $vdir_out.
-# Se a proteção estiver ativada, o PDF será protegido contra cópia de texto e impressão.
-# Dependencias necessárias:
-# 1) Requer o LibreOffice instalado. Se não estiver instalado, use:
-#    sudo apt -y install libreoffice
-# 2) Se o pdftk não estiver instalado, use: 
-#    sudo apt -y install pdftk
-# 3) Se o qpdf não estiver instalado, use:
-#    sudo apt -y install qpdf
-#
+# Nome: doc2pdf.sh
+# Descricao: Converte arquivos .doc, .docx e .odt de um diretório para PDF. Opcionalmente
+# aplica proteção contra cópia e impressão na exportação (LibreOffice >= 7.3).
+# Dependencias necessárias (instale manualmente conforme a distro):
+#   Debian/Ubuntu: sudo apt -y install libreoffice
+#   Fedora:        sudo dnf -y install libreoffice
+#   Flatpak:       flatpak install flathub org.libreoffice.LibreOffice
+#   (LibreOffice via Flatpak é detectado e usado com preferência.)
 # Autor: Gladiston Santana <gladiston[dot]santana[at]gmail[dot]com>
-# Data: 02/10/2024
-#
-# Licença: GPL (GNU General Public License)
-#
-# Variáveis padrão de saída, tipos de arquivos e proteção
-vdir_out=""
-vdoc_types="doc,docx,odt"
-vuse_tool="pdftk"  # O padrão será o pdftk, mas pode ser alterado para qpdf
-vdoc_protect=true  # Por padrão, aplica proteção contra cópia e impressão
-vdoc_owner_password="a8b7X2z9"  # Senha padrão para criptografia, usada apenas para proteção
+# Criacao: 02/10/2024
+# Atualizado em: 16/06/2026
+# Licenca: GPL (GNU General Public License)
 
-# Função para tratar erros e encerrar o script
-handle_error() {
-  echo "Erro: $1"
+###############################################################################
+# Configurações (variáveis começam com 'v' em PascalCase)
+###############################################################################
+vDocOwnerPassword="a8b7X2z9"    # Senha de permissões (owner) na exportação PDF
+vDocProtect=true                # true: protege PDFs (copia/impressão); false: não protege
+vDocExportNotes=false           # true: tenta exportar notas como anotações PDF (pouco útil; padrão false)
+
+# Padrões a ignorar silenciosamente (backup, temporários, scripts, versionamento)
+# Qualquer arquivo cujo NOME contenha um destes padrões não terá mensagem 'Ignorando ...'
+vIgnorePatterns=(".cmd" ".sh" ".ori" ".bak" ".old" ".tmp" ".temp" "~" ".swp")
+vLibreOfficeFlatpakId="org.libreoffice.LibreOffice"
+vLibreOfficeViaFlatpak=false
+
+###############################################################################
+# Funções
+###############################################################################
+
+print_usage() {  # uso resumido (erro)
+  echo "Uso: $(basename "$0") [-h] [<dir_in> <dir_out>] [-doc_protect=true|false] [-doc_export_notes=true|false] [-doc_owner_password=xxxxx]"
+  echo "Use '$(basename "$0") -h' para ver todas as opções e variáveis de ambiente."
+}
+
+print_help() {  # ajuda completa
+  cat <<EOF
+$(basename "$0") — Converte .doc, .docx e .odt para PDF (com proteção opcional).
+Títulos/estilos de tópico do documento são exportados como marcadores (sumário) no PDF.
+Por padrão, notas/comentários não são exportados como anotações PDF (-doc_export_notes=false).
+A opção -doc_export_notes=true insere ícones no PDF, mas na prática a maioria dos leitores
+não exibe o conteúdo ao passar o mouse (apenas ao clicar, se exibir) — uso limitado.
+
+Uso:
+  $(basename "$0") [-h] [<dir_in> <dir_out>] [opções]
+
+Opções:
+  -h, --help                 Exibe esta ajuda e encerra
+  -doc_protect=true|false    Protege PDFs contra cópia e impressão (padrão: true)
+  -doc_export_notes=true|false Exporta notas como anotações PDF (padrão: false; pouco útil)
+  -doc_owner_password=senha  Senha de permissões na exportação PDF
+
+Parâmetros posicionais:
+  dir_in                     Diretório de entrada com os documentos
+  dir_out                    Diretório de saída dos PDFs gerados
+
+Variáveis de ambiente (substituem parâmetros quando omitidos):
+  doc2pdf_in                 Equivalente a <dir_in>
+  doc2pdf_out                Equivalente a <dir_out>
+  doc2pdf_doc_protect        Equivalente a -doc_protect=true|false
+  doc2pdf_doc_export_notes   Equivalente a -doc_export_notes=true|false
+  doc2pdf_doc_owner_password Equivalente a -doc_owner_password=senha
+
+Parâmetros na linha de comando têm prioridade sobre variáveis de ambiente.
+
+Exemplos:
+  $(basename "$0") ./entrada ./saida
+  $(basename "$0") ./entrada ./saida -doc_protect=false
+  doc2pdf_in=./entrada doc2pdf_out=./saida $(basename "$0")
+EOF
+}
+
+handle_error() { # encerra com mensagem de erro
+  local vMsg="$1"
+  echo "ERRO: $vMsg" >&2
   exit 1
 }
 
-# Verificar se libreoffice está instalado
-if ! command -v libreoffice &> /dev/null; then
-  handle_error "O LibreOffice não está instalado. Instale-o com:
-    sudo apt -y install libreoffice"
-fi
 
-# Se o primeiro argumento for um diretório existente, assuma como vdir_in
-if [ -d "$1" ]; then
-  vdir_in="$1"
-  shift
-else
-  handle_error "O primeiro argumento deve ser um diretório válido."
-fi
+json_escape() { # escapa string para uso em valor JSON
+  local vValue="$1"
+  vValue="${vValue//\\/\\\\}"
+  vValue="${vValue//\"/\\\"}"
+  printf '%s' "$vValue"
+}
 
-# Processar os argumentos da linha de comando
-for varg in "$@"; do
-  case $varg in
-    --dir_out=*)
-      vdir_out="${varg#*=}"
-      shift
-      ;;
-    --doc_type=*)
-      vdoc_types="${varg#*=}"
-      shift
-      ;;
-    --doc_protect=false)
-      vdoc_protect=false
-      shift
-      ;;
-    --doc_owner_password=*)
-      vdoc_owner_password="${varg#*=}"
-      shift
-      ;;
-    --use=*)
-      vuse_tool="${varg#*=}"
-      shift
-      ;;
-    *)
-      # Argumento desconhecido
-      echo "Uso: $0 [diretorio] [--dir_out=path] [--doc_type=extensoes] [--doc_protect=true/false] [--doc_owner_password=sua_senha] [--use=pdftk/qpdf]"
-      exit 1
-      ;;
-  esac
-done
+build_pdf_convert_target() { # define filtro --convert-to (tópicos/marcadores sempre exportados)
+  local vFilterParams vPwdJson vExportNotesJson
 
-# Se vdir_out não foi especificado na linha de comando, assume-se vdir_in/pdf
-if [ -z "$vdir_out" ]; then
-  vdir_out="$vdir_in/pdf"
-fi
-
-# Verificar se a pasta vdir_out existe, e se não, criar a pasta
-if [ ! -d "$vdir_out" ]; then
-  vparent_dir=$(dirname "$vdir_out")
-  if [ -d "$vparent_dir" ]; then
-    echo "Criando diretório de saída: $vdir_out"
-    mkdir -p "$vdir_out" || handle_error "Falha ao criar o diretório $vdir_out"
+  if [[ "$vDocExportNotes" == true ]]; then
+    vExportNotesJson="true"
   else
-    handle_error "O diretório pai $vparent_dir não existe. Não foi possível criar $vdir_out."
+    vExportNotesJson="false"
   fi
-fi
 
-# Verificar a ferramenta a ser usada com base no argumento --use
-if [ "$vuse_tool" = "pdftk" ]; then
-  if ! command -v pdftk &> /dev/null; then
-    handle_error "O pdftk não está instalado. Instale-o com:
-      sudo apt -y install pdftk"
+  vFilterParams='"ExportBookmarks":{"type":"boolean","value":"true"}'
+  vFilterParams+=',"ExportNotes":{"type":"boolean","value":"'${vExportNotesJson}'"}'
+  vFilterParams+=',"ExportNotesInMargin":{"type":"boolean","value":"false"}'
+
+  if [[ "$vDocProtect" == true ]]; then
+    vPwdJson="$(json_escape "$vDocOwnerPassword")"
+    vFilterParams+=',"RestrictPermissions":{"type":"boolean","value":"true"}'
+    vFilterParams+=',"PermissionPassword":{"type":"string","value":"'${vPwdJson}'"}'
+    vFilterParams+=',"Printing":{"type":"long","value":"0"}'
+    vFilterParams+=',"EnableCopyingOfContent":{"type":"boolean","value":"false"}'
   fi
-elif [ "$vuse_tool" = "qpdf" ]; then
-  if ! command -v qpdf &> /dev/null; then
-    handle_error "O qpdf não está instalado. Instale-o com:
-      sudo apt -y install qpdf"
+
+  printf '%s' "pdf:writer_pdf_Export:{${vFilterParams}}"
+}
+
+libreoffice_available_via_flatpak() {
+  command -v flatpak >/dev/null 2>&1 \
+    && flatpak info "$vLibreOfficeFlatpakId" >/dev/null 2>&1
+}
+
+suggest_libreoffice_install() {
+  echo "LibreOffice não encontrado. Instale com um dos comandos abaixo:" >&2
+  if command -v apt >/dev/null 2>&1; then
+    echo "  sudo apt -y install libreoffice" >&2
+  elif command -v dnf >/dev/null 2>&1; then
+    echo "  sudo dnf -y install libreoffice" >&2
   fi
-else
-  handle_error "O argumento --use deve ser 'pdftk' ou 'qpdf'."
-fi
+  echo "  flatpak install flathub $vLibreOfficeFlatpakId" >&2
+}
 
-# Converte a lista de tipos de arquivos em um array
-IFS=',' read -r -a vtypes_array <<< "$vdoc_types"
+ensure_libreoffice() {
+  if libreoffice_available_via_flatpak; then
+    vLibreOfficeViaFlatpak=true
+    echo "Usando LibreOffice via Flatpak ($vLibreOfficeFlatpakId)."
+    return 0
+  fi
+  if command -v libreoffice >/dev/null 2>&1; then
+    vLibreOfficeViaFlatpak=false
+    return 0
+  fi
+  suggest_libreoffice_install
+  handle_error "LibreOffice não encontrado."
+}
 
-# Loop para encontrar e converter arquivos de cada tipo especificado
-for ext in "${vtypes_array[@]}"; do
-  for file in "$vdir_in"/*."$ext"; do
-    if [ -f "$file" ]; then
-      # Obtém o nome do arquivo sem a extensão
-      vfilename=$(basename "$file")
-      vbase_filename="${vfilename%.*}"
+run_libreoffice() {
+  if [[ "$vLibreOfficeViaFlatpak" == true ]]; then
+    flatpak run "$vLibreOfficeFlatpakId" "$@"
+  else
+    libreoffice "$@"
+  fi
+}
 
-      # Define o caminho do arquivo PDF de saída
-      vpdf_file="$vdir_out/$vbase_filename.pdf"
-
-      # Verifica se o arquivo PDF já existe e o apaga antes de criar um novo
-      if [ -f "$vpdf_file" ]; then
-        echo "Removendo arquivo PDF existente: $vpdf_file"
-        rm -f "$vpdf_file" || handle_error "Erro ao remover $vpdf_file"
+ensure_out_dir() { # garante que vDirOut exista
+  if [[ ! -d "$vDirOut" ]]; then
+    read -p "Diretório $vDirOut não existe. Deseja criá-lo? (s/n) " vChoice
+    if [[ "$vChoice" =~ ^[sS]$ ]]; then
+      mkdir -p "$vDirOut"
+      if [ $? -ne 0 ]; then
+        handle_error "Falha ao criar diretório $vDirOut"
       fi
+    else
+      handle_error "Diretório de saída não disponível."
+    fi
+  fi
+}
 
-      echo "Convertendo $file para PDF..."
-      libreoffice --headless --convert-to pdf --outdir "$vdir_out" "$file" || handle_error "$file"
-
-      # Montar as permissões para pdftk ou qpdf com base no argumento --use e na variável vdoc_protect
-      if [ -f "$vpdf_file" ]; then
-        if [ "$vuse_tool" = "pdftk" ]; then
-          if [ "$vdoc_protect" = true ]; then
-            pdftk "$vpdf_file" output "${vpdf_file%.pdf}-protected.pdf" owner_pw "$vdoc_owner_password" allow AllFeatures || handle_error "$vpdf_file"
-            mv "${vpdf_file%.pdf}-protected.pdf" "$vpdf_file" || handle_error "$vpdf_file"
-            echo "Proteção aplicada em $vpdf_file com pdftk"
-          else
-            echo "Nenhuma proteção aplicada em $vpdf_file"
-          fi
-        elif [ "$vuse_tool" = "qpdf" ]; then
-          if [ "$vdoc_protect" = true ]; then
-            qpdf --encrypt "" "$vdoc_owner_password" 256 \
-                 --print=none --modify=none --extract=n \
-                 -- "$vpdf_file" "${vpdf_file%.pdf}-protected.pdf" || handle_error "$vpdf_file"
-          else
-            qpdf --encrypt "" "$vdoc_owner_password" 256 \
-                 -- "$vpdf_file" "${vpdf_file%.pdf}-protected.pdf" || handle_error "$vpdf_file"
-          fi
-          mv "${vpdf_file%.pdf}-protected.pdf" "$vpdf_file" || handle_error "$vpdf_file"
-          echo "Proteção aplicada em $vpdf_file com qpdf"
-        fi
-      else
-        handle_error "$vpdf_file"
-      fi
+should_suppress_ignore_log() { # retorna 0 (verdadeiro) se deve suprimir 'Ignorando ...'
+  local vNameLower="$1"
+  local vFullPath="$2"
+  # diretórios: não logar
+  if [[ -d "$vFullPath" ]]; then
+    return 0
+  fi
+  # padrões
+  for pat in "${vIgnorePatterns[@]}"; do
+    if [[ "$vNameLower" == *"$pat"* ]]; then
+      return 0
     fi
   done
+  return 1
+}
+
+convert_files() {  # faz a conversão LO -> PDF (com proteção opcional na exportação)
+  local vConvertTo
+  vConvertTo="$(build_pdf_convert_target)"
+
+  # Permite que padrões sem correspondência expandam para vazio em vez de retornarem literalmente
+  shopt -s nullglob
+  for vFile in "$vDirIn"/*; do
+    vBase="$(basename "$vFile")"
+    vNameLower="${vBase,,}"
+
+    case "$vFile" in
+      *.doc|*.docx|*.odt)
+        if [[ "$vDocProtect" == true ]]; then
+          echo "Convertendo e protegendo $vBase..."
+        else
+          echo "Convertendo $vBase..."
+        fi
+        run_libreoffice --headless --convert-to "$vConvertTo" --outdir "$vDirOut" "$vFile"
+        if [ $? -ne 0 ]; then
+          handle_error "Falha ao converter $vBase"
+        fi
+        ;;
+      *)
+        if should_suppress_ignore_log "$vNameLower" "$vFile"; then
+          continue
+        fi
+        echo "Ignorando $vFile (formato não suportado)."
+        ;;
+    esac
+  done
+  echo "Conversão concluída."
+}
+
+###############################################################################
+# Início (validação e fluxo)
+###############################################################################
+
+# Valores opcionais a partir de variáveis de ambiente (podem ser sobrescritos na CLI)
+[[ -n "${doc2pdf_doc_protect:-}" ]] && vDocProtect="$doc2pdf_doc_protect"
+[[ -n "${doc2pdf_doc_export_notes:-}" ]] && vDocExportNotes="$doc2pdf_doc_export_notes"
+[[ -n "${doc2pdf_doc_owner_password:-}" ]] && vDocOwnerPassword="$doc2pdf_doc_owner_password"
+
+vDirIn=""
+vDirOut=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      print_help
+      exit 0
+      ;;
+    -doc_protect=*)
+      vDocProtect="${1#*=}"
+      ;;
+    -doc_export_notes=*)
+      vDocExportNotes="${1#*=}"
+      ;;
+    -doc_owner_password=*)
+      vDocOwnerPassword="${1#*=}"
+      ;;
+    -use_tool=*)
+      echo "Aviso: parâmetro obsoleto '$1' (proteção agora é feita pelo LibreOffice na exportação)."
+      ;;
+    -*)
+      echo "Aviso: parâmetro desconhecido '$1'"
+      ;;
+    *)
+      if [[ -z "$vDirIn" ]]; then
+        vDirIn="$1"
+      elif [[ -z "$vDirOut" ]]; then
+        vDirOut="$1"
+      else
+        echo "Aviso: parâmetro posicional ignorado '$1'"
+      fi
+      ;;
+  esac
+  shift
 done
 
-echo "Conversão concluída."
+# Diretórios a partir de variáveis de ambiente, se omitidos na linha de comando
+[[ -z "$vDirIn" && -n "${doc2pdf_in:-}" ]] && vDirIn="$doc2pdf_in"
+[[ -z "$vDirOut" && -n "${doc2pdf_out:-}" ]] && vDirOut="$doc2pdf_out"
 
+if [[ -z "$vDirIn" || -z "$vDirOut" ]]; then
+  print_usage
+  handle_error "Parâmetros obrigatórios ausentes (<dir_in> e <dir_out> ou doc2pdf_in/doc2pdf_out)."
+fi
+
+if [[ ! -d "$vDirIn" ]]; then
+  handle_error "Diretório de entrada não encontrado: $vDirIn"
+fi
+
+# Verifica dependências (sugere instalação, não instala automaticamente)
+ensure_libreoffice
+
+# Garante saída e converte
+ensure_out_dir
+convert_files
+
+# Fim

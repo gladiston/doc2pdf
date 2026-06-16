@@ -1,0 +1,36 @@
+# Backups e versoes antigas
+*.old
+*.bak
+*.ori
+*.orig
+*~
+
+# Temporarios
+*.tmp
+*.temp
+*.swp
+*.swo
+
+# Saida de conversao (gerada pelos scripts)
+pdf/
+out/
+output/
+*_test/
+_test*/
+
+# Documentos de teste / amostra (opcional: remova se quiser versionar)
+# *.doc
+# *.docx
+# *.odt
+# *.pdf
+
+# SO e editores
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.code-workspace
+
+# Logs
+*.log
