@@ -95,7 +95,10 @@ Parâmetros na linha de comando têm **prioridade** sobre variáveis de ambiente
 
 **Linux:**
 ```bash
-doc2pdf_in=./entrada doc2pdf_out=./saida doc2pdf_doc_protect=false ./doc2pdf.sh
+doc2pdf_in=$HOME/Downloads/entrada
+doc2pdf_out=$HOME/Downloads/saida
+doc2pdf_doc_protect=false
+./doc2pdf.sh
 ```
 
 **Windows:**
